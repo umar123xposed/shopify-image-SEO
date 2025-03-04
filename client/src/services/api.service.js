@@ -4,11 +4,11 @@ import AuthService from './auth.service';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 // Start SEO process
-const startSEO = async (startFresh = false) => {
+const startSEO = async (startFresh = false, startFromProductId = null) => {
   try {
     const response = await axios.post(
       `${API_URL}/start`,
-      { startFresh },
+      { startFresh, startFromProductId },
       { headers: AuthService.authHeader() }
     );
     return response.data;

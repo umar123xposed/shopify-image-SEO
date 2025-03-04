@@ -70,20 +70,30 @@ function ImageCard({ image, index }) {
             </span>
           </div>
         </div>
-        {image.newFilename && (
-          <div className="mt-2">
-            <p className="text-sm text-gray-300 font-medium">New Filename:</p>
-            <p className="text-xs text-gray-400 mt-1">{image.newFilename}</p>
-          </div>
-        )}
-        
         {image.newAltText && (
           <div className="mt-2">
             <p className="text-sm text-gray-300 font-medium">New Alt Text:</p>
             <p className="text-xs text-gray-400 mt-1">{image.newAltText}</p>
           </div>
         )}
-        
+        {image.newFilename && (
+          <div className="mt-2">
+            <p className="text-sm text-gray-300 font-medium">New Filename:</p>
+            <p className="text-xs text-gray-400 mt-1">{image.newFilename}</p>
+          </div>
+        )}
+        <div className="mt-2 space-y-2">
+          <div>
+            <p className="text-sm text-gray-300 font-medium">Product Info:</p>
+            <p className="text-xs text-gray-400">ID: {image.productId}</p>
+            <p className="text-xs text-gray-400">Title: {image.productTitle}</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-300 font-medium">Image IDs:</p>
+            <p className="text-xs text-gray-400">Old: {image.oldImageId}</p>
+            <p className="text-xs text-gray-400">New: {image.newImageId}</p>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -112,11 +122,15 @@ function Dashboard() {
     completedProducts: 0,
     currentProduct: null,
     currentImage: null,
-    processedImages: []
+    processedImages: [],
+    lastError: null,
+    apiErrorCount: 0
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [user, setUser] = useState(null);
+  const [showStartFromModal, setShowStartFromModal] = useState(false);
+  const [startFromProductId, setStartFromProductId] = useState('');
   const navigate = useNavigate();
 
   // Fetch status periodically
@@ -146,12 +160,12 @@ function Dashboard() {
     }
   }, []);
 
-  const handleStart = async (startFresh = false) => {
+  const handleStart = async (startFresh = false, productId = null) => {
     try {
       setLoading(true);
       setError('');
       
-      await ApiService.startSEO(startFresh);
+      await ApiService.startSEO(startFresh, productId);
       
       // Fetch updated status
       const data = await ApiService.getSEOStatus();
@@ -161,6 +175,7 @@ function Dashboard() {
       setError(err.message || 'Failed to start SEO process');
     } finally {
       setLoading(false);
+      setShowStartFromModal(false);
     }
   };
 
@@ -185,6 +200,14 @@ function Dashboard() {
   const handleLogout = () => {
     AuthService.logout();
     navigate('/');
+  };
+
+  const handleStartFromSpecific = () => {
+    if (!startFromProductId.trim()) {
+      setError('Please enter a product ID');
+      return;
+    }
+    handleStart(false, startFromProductId.trim());
   };
 
   // Calculate progress percentage
@@ -245,6 +268,13 @@ function Dashboard() {
                     Resume
                   </button>
                   <button
+                    onClick={() => setShowStartFromModal(true)}
+                    disabled={loading}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                  >
+                    Start from ID
+                  </button>
+                  <button
                     onClick={() => handleStart(true)}
                     disabled={loading}
                     className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-md transition-colors"
@@ -299,8 +329,71 @@ function Dashboard() {
               Currently processing: <span className="font-medium text-indigo-400">{status.currentProduct}</span>
             </p>
           )}
+
+          {/* Error Display */}
+          {status.lastError && (
+            <div className="mt-4 p-4 bg-red-900/50 rounded-lg border border-red-700">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-red-300">
+                    {status.apiErrorCount > 0 ? (
+                      <>
+                        API Error Count: {status.apiErrorCount}/{3}
+                        {status.apiErrorCount >= 3 && (
+                          <span className="block text-red-400 mt-1">
+                            Process stopped automatically due to multiple API errors.
+                            Please check your API key and restart the process.
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      'Error occurred'
+                    )}
+                  </h3>
+                  <div className="mt-2 text-sm text-red-200">
+                    {status.lastError}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         
+        {/* Start from Product ID Modal */}
+        {showStartFromModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full">
+              <h3 className="text-xl font-bold mb-4">Start from Specific Product ID</h3>
+              <input
+                type="text"
+                value={startFromProductId}
+                onChange={(e) => setStartFromProductId(e.target.value)}
+                placeholder="Enter Product ID"
+                className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 mb-4"
+              />
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={() => setShowStartFromModal(false)}
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-md"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleStartFromSpecific}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md"
+                >
+                  Start
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Recent Images */}
         {status.processedImages && status.processedImages.length > 0 && (
           <div className="mb-8">

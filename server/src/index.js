@@ -3,10 +3,15 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const rateLimit = require('express-rate-limit');
+const connectDB = require('./config/db');
 const seoRouter = require('./routes/seo.routes');
+const authRouter = require('./routes/auth.routes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Connect to MongoDB
+connectDB();
 
 // Rate limiting configurations
 const statusLimiter = rateLimit({
@@ -19,6 +24,12 @@ const actionLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 10, // 10 requests per minute for action endpoints
   message: { message: 'Too many action requests, please try again later.' }
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 requests per 15 minutes for auth endpoints
+  message: { message: 'Too many authentication attempts, please try again later.' }
 });
 
 // CORS configuration
@@ -34,9 +45,16 @@ app.use(bodyParser.json());
 app.use('/api/status', statusLimiter);
 app.use('/api/start', actionLimiter);
 app.use('/api/stop', actionLimiter);
+app.use('/api/auth', authLimiter);
 
 // API routes
-app.use('/api', seoRouter);
+app.use('/api/auth', authRouter); // Auth routes should come before protected routes
+app.use('/api', seoRouter);       // SEO routes are protected
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development' });
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
