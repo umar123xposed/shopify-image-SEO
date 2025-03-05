@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://shopify-seo-optimizer-server.vercel.app/api';
 
 // Helper to get auth token
 const getToken = () => localStorage.getItem('authToken');

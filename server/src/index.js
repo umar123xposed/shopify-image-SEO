@@ -34,9 +34,13 @@ const authLimiter = rateLimit({
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: [
+    process.env.CLIENT_URL || 'https://seo-king.vercel.app',
+    'http://localhost:3000'
+  ],
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 
 app.use(bodyParser.json());
@@ -65,6 +69,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
-}); 
+// Only start the server if we're not in Vercel's production environment
+if (process.env.VERCEL_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+  });
+}
+
+// Export the Express app for Vercel
+module.exports = app; 

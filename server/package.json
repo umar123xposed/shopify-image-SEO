@@ -1,8 +1,11 @@
 {
-  "name": "shopify-image-seo-optimizer-server",
+  "name": "shopify-seo-optimizer-server",
   "version": "1.0.0",
   "description": "Server for Shopify Image SEO Optimizer",
   "main": "src/index.js",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",

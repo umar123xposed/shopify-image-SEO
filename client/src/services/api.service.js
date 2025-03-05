@@ -1,7 +1,36 @@
 import axios from 'axios';
 import AuthService from './auth.service';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://shopify-seo-optimizer-server.vercel.app/api';
+
+// Add error handling
+const handleApiError = (error) => {
+  console.error('API Error:', {
+    endpoint: error.config?.url,
+    status: error.response?.status,
+    message: error.message,
+    data: error.response?.data
+  });
+  throw error;
+};
+
+// Use in your API calls
+const makeRequest = async (method, endpoint, data = null) => {
+  try {
+    const response = await axios({
+      method,
+      url: `${API_URL}${endpoint}`,
+      data,
+      headers: {
+        'Content-Type': 'application/json',
+        // Add any other headers you need
+      }
+    });
+    return response.data;
+  } catch (error) {
+    handleApiError(error);
+  }
+};
 
 // Start SEO process
 const startSEO = async (startFresh = false, startFromProductId = null) => {
