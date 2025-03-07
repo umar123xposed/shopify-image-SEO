@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import ApiService from '../services/api.service';
-import AuthService from '../services/auth.service';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://shopify-seo-optimizer-server.vercel.app/api';
+import ApiService from '../services/api.service';
+
+
 
 function ImageCard({ image, index }) {
   const statusColors = {
@@ -31,89 +30,93 @@ function ImageCard({ image, index }) {
   };
 
   const [imageLoaded, setImageLoaded] = useState(false);
+  const status = image?.status || 'pending';
+  const statusColor = statusColors[status] || statusColors.pending;
+  const statusIcon = statusIcons[status] || null;
 
   return (
-    <div 
-      className={`rounded-xl shadow-lg overflow-hidden border-2 ${statusColors[image.status]} backdrop-blur-sm transition-all duration-500 hover:scale-[1.02] hover:shadow-xl`}
-      style={{ 
-        animation: `fadeIn 0.5s ease-out ${index * 0.1}s forwards`
-      }}
-    >
-      <div className="relative group bg-gray-900/30">
-        <div className="w-full h-48 flex items-center justify-center overflow-hidden">
-          <img 
-            src={image.src} 
-            alt={image.newAltText || 'Processing image'} 
-            className={`w-full h-full object-cover transition-opacity duration-500 ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+    <div className={`bg-gray-800 rounded-lg overflow-hidden border ${statusColor}`}>
+      <div className="relative aspect-square">
+        {image?.src && (
+          <img
+            src={image.newImageSrc || image.src}
+            alt={image.newAltText || 'Product image'}
+            className={`w-full h-full object-cover transition-opacity duration-300 ${
+              imageLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
             onLoad={() => setImageLoaded(true)}
+            onError={(e) => {
+              e.target.onerror = null;
+              e.target.src = 'https://via.placeholder.com/400?text=Image+Not+Found';
+            }}
           />
-          {!imageLoaded && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            </div>
-          )}
-        </div>
+        )}
+        {!imageLoaded && (
+          <div className="absolute inset-0 bg-gray-700 animate-pulse" />
+        )}
       </div>
       
       <div className="p-4">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center">
-            {statusIcons[image.status]}
+            {statusIcon}
             <span className={`ml-2 font-medium ${
-              image.status === 'completed' ? 'text-green-400' : 
-              image.status === 'processing' ? 'text-yellow-400' : 'text-red-400'
+              status === 'completed' ? 'text-green-400' : 
+              status === 'processing' ? 'text-yellow-400' : 
+              status === 'error' ? 'text-red-400' : 'text-gray-400'
             }`}>
-              {image.status.charAt(0).toUpperCase() + image.status.slice(1)}
+              {status.charAt(0).toUpperCase() + status.slice(1)}
             </span>
           </div>
         </div>
-        {image.newAltText && (
+        {image?.newAltText && (
           <div className="mt-2">
             <p className="text-sm text-gray-300 font-medium">New Alt Text:</p>
             <p className="text-xs text-gray-400 mt-1">{image.newAltText}</p>
           </div>
         )}
-        {image.newFilename && (
+        {image?.newFilename && (
           <div className="mt-2">
             <p className="text-sm text-gray-300 font-medium">New Filename:</p>
             <p className="text-xs text-gray-400 mt-1">{image.newFilename}</p>
           </div>
         )}
         <div className="mt-2 space-y-2">
-          <div>
-            <p className="text-sm text-gray-300 font-medium">Product Info:</p>
-            <p className="text-xs text-gray-400">ID: {image.productId}</p>
-            <p className="text-xs text-gray-400">Title: {image.productTitle}</p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-300 font-medium">Image IDs:</p>
-            <p className="text-xs text-gray-400">Old: {image.oldImageId}</p>
-            <p className="text-xs text-gray-400">New: {image.newImageId}</p>
-          </div>
+          {image?.productId && (
+            <div>
+              <p className="text-sm text-gray-300 font-medium">Product Info:</p>
+              <p className="text-xs text-gray-400">ID: {image.productId}</p>
+              <p className="text-xs text-gray-400">Title: {image.productTitle}</p>
+            </div>
+          )}
+          {(image?.oldImageId || image?.newImageId) && (
+            <div>
+              <p className="text-sm text-gray-300 font-medium">Image IDs:</p>
+              {image.oldImageId && <p className="text-xs text-gray-400">Old: {image.oldImageId}</p>}
+              {image.newImageId && <p className="text-xs text-gray-400">New: {image.newImageId}</p>}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function StatCard({ title, value, icon }) {
-  return (
-    <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl border border-white/20">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium text-gray-300">{title}</p>
-          <p className="mt-2 text-3xl font-bold text-white">{value}</p>
-        </div>
-        <div className="p-3 bg-white/5 rounded-lg">
-          {icon}
-        </div>
-      </div>
-    </div>
-  );
-}
+// function StatCard({ title, value, icon }) {
+//   return (
+//     <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl border border-white/20">
+//       <div className="flex items-center justify-between">
+//         <div>
+//           <p className="text-sm font-medium text-gray-300">{title}</p>
+//           <p className="mt-2 text-3xl font-bold text-white">{value}</p>
+//         </div>
+//         <div className="p-3 bg-white/5 rounded-lg">
+//           {icon}
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
 
 function Dashboard() {
   const [status, setStatus] = useState({
@@ -128,10 +131,8 @@ function Dashboard() {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [user, setUser] = useState(null);
   const [showStartFromModal, setShowStartFromModal] = useState(false);
   const [startFromProductId, setStartFromProductId] = useState('');
-  const navigate = useNavigate();
 
   // Fetch status periodically
   useEffect(() => {
@@ -150,14 +151,6 @@ function Dashboard() {
     const interval = setInterval(fetchStatus, 3000);
     
     return () => clearInterval(interval);
-  }, []);
-
-  // Get user info
-  useEffect(() => {
-    const currentUser = AuthService.getCurrentUser();
-    if (currentUser) {
-      setUser(currentUser);
-    }
   }, []);
 
   const handleStart = async (startFresh = false, productId = null) => {
@@ -197,11 +190,6 @@ function Dashboard() {
     }
   };
 
-  const handleLogout = () => {
-    AuthService.logout();
-    navigate('/');
-  };
-
   const handleStartFromSpecific = () => {
     if (!startFromProductId.trim()) {
       setError('Please enter a product ID');
@@ -217,27 +205,6 @@ function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      {/* Header */}
-      <header className="bg-gray-800 shadow-md">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <h1 className="text-xl font-bold">Shopify Image SEO Optimizer</h1>
-          
-          <div className="flex items-center space-x-4">
-            {user && (
-              <div className="text-sm text-gray-300">
-                <span className="font-medium">{user.shopName}</span>
-              </div>
-            )}
-            <button 
-              onClick={handleLogout}
-              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
-
       <main className="container mx-auto px-4 py-8">
         {/* Status Card */}
         <div className="bg-gray-800 rounded-xl shadow-xl p-6 mb-8">
@@ -326,7 +293,7 @@ function Dashboard() {
           
           {status.currentProduct && (
             <p className="text-sm text-gray-400">
-              Currently processing: <span className="font-medium text-indigo-400">{status.currentProduct}</span>
+              Currently processing: <span className="font-medium text-indigo-400">{status.currentProduct.title || 'Unknown Product'}</span>
             </p>
           )}
 

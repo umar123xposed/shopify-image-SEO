@@ -1,7 +1,12 @@
 import axios from 'axios';
 import AuthService from './auth.service';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://shopify-seo-optimizer-server.vercel.app/api';
+// Use localhost for development, Vercel URL for production
+const API_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://localhost:5000/api'
+  : process.env.REACT_APP_API_URL || 'https://shopify-seo-optimizer-server.vercel.app/api';
+
+console.log('Using API URL:', API_URL); // For debugging
 
 // Add error handling
 const handleApiError = (error) => {
@@ -23,7 +28,7 @@ const makeRequest = async (method, endpoint, data = null) => {
       data,
       headers: {
         'Content-Type': 'application/json',
-        // Add any other headers you need
+        ...AuthService.authHeader()
       }
     });
     return response.data;
@@ -34,50 +39,49 @@ const makeRequest = async (method, endpoint, data = null) => {
 
 // Start SEO process
 const startSEO = async (startFresh = false, startFromProductId = null) => {
-  try {
-    const response = await axios.post(
-      `${API_URL}/start`,
-      { startFresh, startFromProductId },
-      { headers: AuthService.authHeader() }
-    );
-    return response.data;
-  } catch (error) {
-    throw error.response?.data || { message: 'Failed to start SEO process' };
-  }
+  return makeRequest('POST', '/start', { startFresh, startFromProductId });
 };
 
 // Get SEO status
 const getSEOStatus = async () => {
-  try {
-    const response = await axios.get(
-      `${API_URL}/status`,
-      { headers: AuthService.authHeader() }
-    );
-    return response.data;
-  } catch (error) {
-    throw error.response?.data || { message: 'Failed to get SEO status' };
-  }
+  return makeRequest('GET', '/status');
 };
 
 // Stop SEO process
 const stopSEO = async () => {
   try {
-    const response = await axios.post(
-      `${API_URL}/stop`,
-      {},
-      { headers: AuthService.authHeader() }
-    );
+    const response = await axios({
+      method: 'POST',
+      url: `${API_URL}/stop`,
+      headers: {
+        'Content-Type': 'application/json',
+        ...AuthService.authHeader()
+      }
+    });
     return response.data;
   } catch (error) {
-    throw error.response?.data || { message: 'Failed to stop SEO process' };
+    console.error('Stop SEO Error:', error.response?.data || error.message);
+    throw error;
   }
+};
+
+// Get all products
+const getAllProducts = async () => {
+  return makeRequest('GET', '/products');
+};
+
+// Start SEO for specific product
+const startSEOForProduct = async (productId) => {
+  return makeRequest('POST', '/start', { startFromProductId: productId });
 };
 
 // Export all functions
 const ApiService = {
   startSEO,
   getSEOStatus,
-  stopSEO
+  stopSEO,
+  getAllProducts,
+  startSEOForProduct
 };
 
 export default ApiService; 

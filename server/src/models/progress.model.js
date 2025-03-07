@@ -66,7 +66,14 @@ const progressSchema = new mongoose.Schema({
   apiErrorCount: {
     type: Number,
     default: 0
-  }
+  },
+  productsWithErrors: [String], // Array of product IDs that had errors
+  productCompletionTimes: {
+    type: Map,
+    of: Date,
+    default: {}
+  },
+  error: String,
 });
 
 // Compound index to ensure one progress record per user
