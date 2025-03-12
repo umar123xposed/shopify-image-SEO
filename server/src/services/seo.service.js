@@ -25,6 +25,23 @@ class SEOService {
     this.maxApiErrors = 3; // Stop after 3 consecutive API errors
     this.lastError = null;
     this.productsWithErrors = new Set();
+
+    // Initialize Gemini client
+    this.geminiClient = {
+      generateContent: async ({ contents }) => {
+        try {
+          const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiKey}`,
+            { contents },
+            { headers: { "Content-Type": "application/json" } }
+          );
+          return response.data;
+        } catch (error) {
+          console.error('Gemini API Error:', error.message);
+          throw error;
+        }
+      }
+    };
   }
 
   // Load progress from database
@@ -553,22 +570,21 @@ Filename: <name> (WITHOUT .jpg extension)**
   async forceStop(errorMessage) {
     console.log('Force stopping SEO process...');
     this.isRunning = false;
-    this.apiErrorCount = 0; // Reset error count
+    this.apiErrorCount = 0;
     
-    // Update database to reflect stopped state and save current product info
     try {
       await Progress.findOneAndUpdate(
         { userId: this.userId },
         { 
           isRunning: false,
-          currentProductId: this.currentProduct ? this.currentProduct.id : null,
-          currentProductTitle: this.currentProduct,
+          currentProductId: this.currentProduct?.id || null,
+          currentProductTitle: this.currentProduct?.title || null, // Only store the title string
           lastProductId: this.lastProcessedProductId,
           completedProducts: this.completedProducts,
           currentImage: this.currentImage,
           error: errorMessage,
           lastError: errorMessage,
-          apiErrorCount: 0, // Reset error count in database
+          apiErrorCount: 0,
           updatedAt: new Date()
         },
         { upsert: true }
@@ -609,11 +625,18 @@ Filename: <name> (WITHOUT .jpg extension)**
     }
   }
 
-  async start(progressCallback, startFresh = false, startFromProductId = null) {
+  async start(progressCallback, startFresh = false, startFromProductId = null, seoTypes = ['images', 'content']) {
     // First reset any stale state
     await this.resetState();
     
     if (this.isRunning) return;
+    
+    // Validate seoTypes
+    if (!Array.isArray(seoTypes) || seoTypes.length === 0) {
+      throw new Error('Invalid SEO types provided');
+    }
+    
+    console.log('Starting SEO process with types:', seoTypes);
     
     this.isRunning = true;
     this.onProgress = progressCallback;
@@ -638,7 +661,8 @@ Filename: <name> (WITHOUT .jpg extension)**
             isRunning: true,
             startedAt: new Date(),
             processedProductIds: [], // Clear processed products only if startFresh is true
-            productsWithErrors: [] // Clear errors too when starting fresh
+            productsWithErrors: [], // Clear errors too when starting fresh
+            seoTypes: seoTypes // Store the SEO types in progress
           },
           { upsert: true }
         );
@@ -649,6 +673,12 @@ Filename: <name> (WITHOUT .jpg extension)**
           this.processedProductIds = new Set(existingProgress.processedProductIds);
           console.log(`📝 Loaded ${this.processedProductIds.size} previously completed products`);
         }
+        
+        // Update SEO types in progress
+        await Progress.findOneAndUpdate(
+          { userId: this.userId },
+          { $set: { seoTypes: seoTypes } }
+        );
       }
 
       const products = await this.fetchProducts();
@@ -675,7 +705,7 @@ Filename: <name> (WITHOUT .jpg extension)**
         if (progress.currentProductTitle) {
           startIndex = products.findIndex((p) => p.title === progress.currentProductTitle);
           if (startIndex === -1) {
-        if (progress.lastProductId) {
+            if (progress.lastProductId) {
               startIndex = products.findIndex((p) => p.id === progress.lastProductId);
               startIndex = startIndex !== -1 ? startIndex + 1 : 0;
             } else {
@@ -708,7 +738,7 @@ Filename: <name> (WITHOUT .jpg extension)**
 
       this.updateProgress();
 
-      // Process remaining products
+      // Process remaining products with explicit seoTypes
       for (const product of remainingProducts) {
         if (!this.isRunning) break;
         
@@ -718,7 +748,8 @@ Filename: <name> (WITHOUT .jpg extension)**
           continue;
         }
         
-        await this.processProduct(product);
+        // Pass the seoTypes explicitly
+        await this.processProduct(product, seoTypes);
         
         // Update progress after each product
         await Progress.findOneAndUpdate(
@@ -727,7 +758,8 @@ Filename: <name> (WITHOUT .jpg extension)**
             completedProducts: this.completedProducts,
             processedProductIds: Array.from(this.processedProductIds),
             currentProductId: product.id,
-            currentProductTitle: product.title
+            currentProductTitle: product.title,
+            seoTypes: seoTypes // Ensure SEO types are stored
           }
         );
       }
@@ -742,52 +774,169 @@ Filename: <name> (WITHOUT .jpg extension)**
     }
   }
 
-  async processProduct(product) {
+  async processProduct(product, seoTypes) {
     try {
       if (!this.isRunning) return;
+      
+      // Validate seoTypes at the start of processing
+      if (!Array.isArray(seoTypes) || seoTypes.length === 0) {
+        throw new Error('Invalid SEO types provided to processProduct');
+      }
+      
+      console.log(`Processing product ${product.id} with SEO types:`, seoTypes);
       
       // Store only necessary product information
       this.currentProduct = {
         id: product.id,
         title: product.title,
-        imageCount: product.images?.length || 0
+        imageCount: product.images?.length || 0,
+        seoTypes: seoTypes // Track which types are being processed
       };
       
-        this.updateProgress();
+      this.updateProgress();
 
-      // Process each image
+      // Only process title and description if 'content' type is selected AND 'images' is NOT selected
+      if (seoTypes.includes('content') && !seoTypes.includes('images')) {
+        console.log(`Optimizing only title and description for product ${product.id}...`);
+        
+        // Use the first image for content optimization
+        const mainImage = product.images[0];
+        const imageBuffer = await this.downloadImage(mainImage.src);
+        const base64Image = Buffer.from(imageBuffer).toString('base64');
+        
+        const contentOptimization = await this.getTitleDescriptionOptimization(
+          product.title,
+          product.body_html,
+          base64Image
+        );
+
+        if (contentOptimization.error) {
+          console.error(`Error optimizing content for product ${product.id}:`, contentOptimization.error);
+          throw new Error(`Content optimization failed: ${contentOptimization.error}`);
+        }
+
+        // Update product details in Shopify
+        const updateResult = await this.updateProductDetails(
+          product.id,
+          contentOptimization.title,
+          contentOptimization.description
+        );
+
+        if (!updateResult.success) {
+          throw new Error(`Failed to update product details: ${updateResult.error}`);
+        }
+
+        console.log(`✅ Successfully updated title and description for product ${product.id}`);
+      }
+
+      // Only process images if 'images' type is selected AND 'content' is NOT selected
+      if (seoTypes.includes('images') && !seoTypes.includes('content')) {
+        console.log(`Processing only images for product ${product.id}...`);
+        
         for (const image of product.images) {
-        if (!this.isRunning) return;
+          if (!this.isRunning) return;
           
-        // Create a structured image object
           this.currentImage = {
-          id: image.id,
-          src: image.src,
-          productId: product.id,
+            id: image.id,
+            src: image.src,
+            productId: product.id,
             productTitle: product.title,
             status: 'processing'
           };
-        
-        const result = await this.processImage(image, product);
-        
-        if (!result.success) {
-          if (result.apiKeyError) {
+          
+          const result = await this.processImage(image, product);
+          
+          if (!result.success) {
+            if (result.apiKeyError) {
+              this.currentImage.status = 'error';
+              this.currentImage.error = 'API key error';
+              this.addToProcessedImages(this.currentImage);
+              return;
+            }
             this.currentImage.status = 'error';
-            this.currentImage.error = 'API key error';
+            this.currentImage.error = result.error;
             this.addToProcessedImages(this.currentImage);
-            return;
+            continue;
           }
-          this.currentImage.status = 'error';
-          this.currentImage.error = result.error;
+          
+          // Update image with success data
+          this.currentImage.status = 'completed';
+          this.currentImage.newAltText = result.newAltText;
+          this.currentImage.newFilename = result.newFilename;
           this.addToProcessedImages(this.currentImage);
-          continue;
         }
+      }
+
+      // Process both if both types are selected
+      if (seoTypes.includes('images') && seoTypes.includes('content')) {
+        console.log(`Processing both content and images for product ${product.id}...`);
         
-        // Update image with success data
-        this.currentImage.status = 'completed';
-        this.currentImage.newAltText = result.newAltText;
-        this.currentImage.newFilename = result.newFilename;
-        this.addToProcessedImages(this.currentImage);
+        // First optimize title and description
+        const mainImage = product.images[0];
+        const imageBuffer = await this.downloadImage(mainImage.src);
+        const base64Image = Buffer.from(imageBuffer).toString('base64');
+        
+        const contentOptimization = await this.getTitleDescriptionOptimization(
+          product.title,
+          product.body_html,
+          base64Image
+        );
+
+        if (contentOptimization.error) {
+          console.error(`Error optimizing content for product ${product.id}:`, contentOptimization.error);
+          throw new Error(`Content optimization failed: ${contentOptimization.error}`);
+        }
+
+        // Update product details in Shopify
+        const updateResult = await this.updateProductDetails(
+          product.id,
+          contentOptimization.title,
+          contentOptimization.description
+        );
+
+        if (!updateResult.success) {
+          throw new Error(`Failed to update product details: ${updateResult.error}`);
+        }
+
+        console.log(`✅ Successfully updated title and description for product ${product.id}`);
+
+        // Then process all images
+        for (const image of product.images) {
+          if (!this.isRunning) return;
+          
+          this.currentImage = {
+            id: image.id,
+            src: image.src,
+            productId: product.id,
+            productTitle: contentOptimization.title, // Use the optimized title
+            status: 'processing'
+          };
+          
+          const result = await this.processImage(image, {
+            ...product,
+            title: contentOptimization.title,
+            body_html: contentOptimization.description
+          });
+          
+          if (!result.success) {
+            if (result.apiKeyError) {
+              this.currentImage.status = 'error';
+              this.currentImage.error = 'API key error';
+              this.addToProcessedImages(this.currentImage);
+              return;
+            }
+            this.currentImage.status = 'error';
+            this.currentImage.error = result.error;
+            this.addToProcessedImages(this.currentImage);
+            continue;
+          }
+          
+          // Update image with success data
+          this.currentImage.status = 'completed';
+          this.currentImage.newAltText = result.newAltText;
+          this.currentImage.newFilename = result.newFilename;
+          this.addToProcessedImages(this.currentImage);
+        }
       }
       
       // Mark product as completed
@@ -801,7 +950,12 @@ Filename: <name> (WITHOUT .jpg extension)**
           $set: { 
             [`productCompletionTimes.${product.id}`]: new Date(),
             completedProducts: this.completedProducts,
-            processedProductIds: Array.from(this.processedProductIds)
+            processedProductIds: Array.from(this.processedProductIds),
+            [`optimizationDetails.${product.id}`]: {
+              completedAt: new Date(),
+              seoTypes: seoTypes,
+              status: 'completed'
+            }
           }
         }
       );
@@ -809,7 +963,7 @@ Filename: <name> (WITHOUT .jpg extension)**
       // Clear current product and image
       this.currentProduct = null;
       this.currentImage = null;
-        this.updateProgress();
+      this.updateProgress();
       
     } catch (error) {
       console.error('Process Product Error:', error);
@@ -817,7 +971,15 @@ Filename: <name> (WITHOUT .jpg extension)**
       await Progress.findOneAndUpdate(
         { userId: this.userId },
         { 
-          $addToSet: { productsWithErrors: product.id }
+          $addToSet: { productsWithErrors: product.id },
+          $set: {
+            [`optimizationDetails.${product.id}`]: {
+              completedAt: new Date(),
+              seoTypes: seoTypes,
+              status: 'error',
+              error: error.message
+            }
+          }
         }
       );
       throw error;
@@ -864,6 +1026,163 @@ Filename: <name> (WITHOUT .jpg extension)**
     } catch (error) {
       console.error('Error updating progress:', error);
     }
+  }
+
+  // Get title and description optimization from Gemini AI
+  async getTitleDescriptionOptimization(title, description, base64Image) {
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds delay between retries
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Attempt ${attempt}/${maxRetries} to optimize content...`);
+
+        const prompt = `Optimize the following product title and description for SEO and readability. Make it engaging and informative while maintaining accuracy:
+
+Title: ${title}
+
+Current Description:
+${description}
+
+Please provide:
+1. An optimized title (max 60 characters)
+2. An optimized description in HTML format for shopify description, that is well-structured with sections like Key Features, Specifications, etc.
+
+IMPORTANT: Format your response EXACTLY as follows:
+Optimized Title: [Your optimized title here]
+Optimized Description:
+[Your optimized description here in HTML format]`;
+
+        console.log('Sending prompt to Gemini API...');
+        const response = await this.geminiClient.generateContent({
+          contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64Image } }] }]
+        });
+
+        // Validate API response
+        if (!response?.candidates?.[0]?.content?.parts?.[0]?.text) {
+          throw new Error('Invalid or empty response from Gemini API');
+        }
+
+        const aiResponse = response.candidates[0].content.parts[0].text;
+        console.log('Raw AI Response received, length:', aiResponse.length);
+
+        // Extract title and description using more robust regex patterns
+        const titleMatch = aiResponse.match(/Optimized Title:\s*(.+?)(?=\n|$)/i);
+        const descriptionMatch = aiResponse.match(/Optimized Description:(?:\s*(?:in HTML:?)?)([\s\S]+)$/i);
+
+        console.log('Title match:', titleMatch ? titleMatch[1] : 'No match');
+        console.log('Description match found:', !!descriptionMatch);
+
+        if (!titleMatch || !descriptionMatch) {
+          throw new Error('Could not parse AI response format');
+        }
+
+        let optimizedTitle = titleMatch[1].trim();
+        let optimizedDescription = descriptionMatch[1].trim();
+
+        // Clean up the description
+        optimizedDescription = optimizedDescription
+          .replace(/\```html|\```/g, '') // Remove HTML code block markers
+          .replace(/&amp;/g, '&') // Replace HTML entities
+          .replace(/^\s+|\s+$/g, '') // Trim whitespace
+          .replace(/\n{3,}/g, '\n\n') // Replace multiple newlines with double newlines
+          .replace(/```/g, '') // Remove any remaining code block markers
+          .trim();
+
+        // Validate the extracted content
+        if (!optimizedTitle || optimizedTitle.length > 60) {
+          throw new Error(`Invalid title length (${optimizedTitle.length} chars) or format`);
+        }
+
+        if (!optimizedDescription || optimizedDescription.length < 50) {
+          throw new Error(`Invalid description length (${optimizedDescription.length} chars) or format`);
+        }
+
+        console.log('Successfully extracted content:', {
+          titleLength: optimizedTitle.length,
+          descriptionLength: optimizedDescription.length
+        });
+
+        // If we get here, the content is valid, so return it
+        return {
+          title: optimizedTitle,
+          description: optimizedDescription
+        };
+
+      } catch (error) {
+        lastError = error;
+        console.error(`Attempt ${attempt}/${maxRetries} failed:`, error.message);
+        
+        if (attempt < maxRetries) {
+          console.log(`Waiting ${retryDelay/1000} seconds before retry...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+      }
+    }
+
+    // If we get here, all retries failed
+    console.error('All optimization attempts failed:', lastError);
+    return {
+      error: `Failed after ${maxRetries} attempts: ${lastError.message}`
+    };
+  }
+
+  // Add method to update product details in Shopify
+  async updateProductDetails(productId, title, description) {
+    const maxRetries = 3;
+    const retryDelay = 2000;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Attempt ${attempt}/${maxRetries} to update product details...`);
+        
+        const url = `https://${this.shopName}.myshopify.com/admin/api/2024-01/products/${productId}.json`;
+        
+        const response = await axios.put(
+          url,
+          {
+            product: {
+              id: productId,
+              title: title,
+              body_html: description
+            }
+          },
+          {
+            headers: {
+              "X-Shopify-Access-Token": this.shopifyKey,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        if (!response.data || !response.data.product) {
+          throw new Error('Invalid response from Shopify API when updating product details');
+        }
+
+        console.log(`✅ Successfully updated product ${productId} details on attempt ${attempt}`);
+        return {
+          success: true,
+          updatedProduct: response.data.product
+        };
+
+      } catch (error) {
+        lastError = error;
+        console.error(`Attempt ${attempt}/${maxRetries} failed:`, error.message);
+        
+        if (attempt < maxRetries) {
+          console.log(`Waiting ${retryDelay/1000} seconds before retry...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+      }
+    }
+
+    console.error(`Failed to update product ${productId} details after ${maxRetries} attempts:`, lastError.message);
+    return {
+      success: false,
+      error: lastError.message
+    };
   }
 }
 

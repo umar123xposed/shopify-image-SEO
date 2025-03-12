@@ -8,6 +8,7 @@ const ProductsList = () => {
   const [activeFilter, setActiveFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedSeoTypes, setSelectedSeoTypes] = useState(['images', 'content']);
   const [stats, setStats] = useState({
     totalProducts: 0,
     completedCount: 0,
@@ -67,7 +68,13 @@ const ProductsList = () => {
 
   const handleProductSelect = async (productId) => {
     try {
-      const response = await ApiService.startSEOForProduct(productId);
+      console.log('Starting SEO process with types:', selectedSeoTypes); // Debug log
+      if (selectedSeoTypes.length === 0) {
+        setError('Please select at least one SEO type');
+        return;
+      }
+      
+      const response = await ApiService.startSEOForProduct(productId, [...selectedSeoTypes]); // Create a new array to ensure state is fresh
       if (response) {
         navigate('/dashboard'); // Redirect to dashboard to show progress
       } else {
@@ -76,6 +83,22 @@ const ProductsList = () => {
     } catch (error) {
       setError(error.message || 'An error occurred while starting SEO process');
     }
+  };
+
+  const handleSeoTypeChange = (type) => {
+    setSelectedSeoTypes(prev => {
+      const newTypes = prev.includes(type)
+        ? prev.filter(t => t !== type)
+        : [...prev, type];
+      
+      // Ensure at least one type is selected
+      if (newTypes.length === 0) {
+        return prev;
+      }
+      
+      console.log('Updated SEO types:', newTypes); // Debug log
+      return newTypes;
+    });
   };
 
   const getStatusColor = (status) => {
@@ -120,7 +143,36 @@ const ProductsList = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6 text-white">Products List</h1>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold text-white">Products List</h1>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label className="text-white">SEO Types:</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleSeoTypeChange('images')}
+                className={`px-3 py-1 rounded-full text-sm transition-colors ${
+                  selectedSeoTypes.includes('images')
+                    ? 'bg-indigo-500 text-white'
+                    : 'bg-gray-600 text-gray-300'
+                }`}
+              >
+                Image SEO
+              </button>
+              <button
+                onClick={() => handleSeoTypeChange('content')}
+                className={`px-3 py-1 rounded-full text-sm transition-colors ${
+                  selectedSeoTypes.includes('content')
+                    ? 'bg-indigo-500 text-white'
+                    : 'bg-gray-600 text-gray-300'
+                }`}
+              >
+                Title & Description SEO
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
@@ -235,13 +287,20 @@ const ProductsList = () => {
                   <span className={`px-2 py-1 rounded text-sm ${getStatusColor(product.status)}`}>
                     {product.status}
                   </span>
-                  <button
-                    className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    onClick={() => handleProductSelect(product.id)}
-                    disabled={product.status === 'processing'}
-                  >
-                    Process SEO
-                  </button>
+                  <div className="relative group">
+                    <button
+                      className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={() => handleProductSelect(product.id)}
+                      disabled={product.status === 'processing'}
+                    >
+                      Process SEO
+                    </button>
+                    <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-1 bg-gray-900 text-white text-sm rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                      Will process: {selectedSeoTypes.includes('images') ? 'Images' : ''} 
+                      {selectedSeoTypes.includes('images') && selectedSeoTypes.includes('content') ? ' & ' : ''}
+                      {selectedSeoTypes.includes('content') ? 'Title/Description' : ''}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

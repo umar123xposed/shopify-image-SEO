@@ -38,8 +38,13 @@ const makeRequest = async (method, endpoint, data = null) => {
 };
 
 // Start SEO process
-const startSEO = async (startFresh = false, startFromProductId = null) => {
-  return makeRequest('POST', '/start', { startFresh, startFromProductId });
+const startSEO = async (startFresh = false, startFromProductId = null, seoTypes = ['images', 'content']) => {
+  console.log('API Service - Starting SEO with types:', seoTypes); // Debug log
+  return makeRequest('POST', '/start', { 
+    startFresh, 
+    startFromProductId, 
+    seoTypes: Array.isArray(seoTypes) ? seoTypes : ['images', 'content'] 
+  });
 };
 
 // Get SEO status
@@ -71,8 +76,12 @@ const getAllProducts = async () => {
 };
 
 // Start SEO for specific product
-const startSEOForProduct = async (productId) => {
-  return makeRequest('POST', '/start', { startFromProductId: productId });
+const startSEOForProduct = async (productId, seoTypes = ['images', 'content']) => {
+  console.log('API Service - Starting product SEO with types:', seoTypes); // Debug log
+  return makeRequest('POST', '/start', { 
+    startFromProductId: productId, 
+    seoTypes: Array.isArray(seoTypes) ? seoTypes : ['images', 'content']
+  });
 };
 
 // Export all functions

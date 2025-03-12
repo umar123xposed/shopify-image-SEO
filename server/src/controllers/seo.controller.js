@@ -7,11 +7,18 @@ const activeProcesses = new Map();
 // Define all controller functions
 async function startSEO(req, res) {
   try {
-    const { startFresh, startFromProductId } = req.body;
+    const { startFresh, startFromProductId, seoTypes } = req.body;
     const userId = req.user._id;
     const shopName = req.user.shopName;
     const shopifyKey = req.user.shopifyKey;
     const geminiKey = req.user.geminiKey;
+
+    // Validate seoTypes
+    if (!Array.isArray(seoTypes) || seoTypes.length === 0) {
+      return res.status(400).json({ message: 'Invalid SEO types provided' });
+    }
+
+    console.log('Starting SEO process with types:', seoTypes);
 
     const seoProcess = new SEOService(userId, shopName, shopifyKey, geminiKey);
     await seoProcess.resetState();
@@ -26,7 +33,7 @@ async function startSEO(req, res) {
     }
     
     activeProcesses.set(userId.toString(), seoProcess);
-    seoProcess.start(async () => {}, startFresh === true, startFromProductId);
+    seoProcess.start(async () => {}, startFresh === true, startFromProductId, seoTypes);
 
     res.json({ 
       message: startFromProductId 
@@ -35,7 +42,8 @@ async function startSEO(req, res) {
           ? 'SEO process started fresh' 
           : 'SEO process resumed from checkpoint',
       startFresh: startFresh === true,
-      startFromProductId
+      startFromProductId,
+      seoTypes
     });
   } catch (error) {
     console.error('Error starting SEO process:', error);
