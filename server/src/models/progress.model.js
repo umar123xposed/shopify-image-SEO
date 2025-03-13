@@ -23,6 +23,10 @@ const progressSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  currentProductSeoTypes: {
+    type: [String],
+    default: []
+  },
   completedProducts: { 
     type: Number, 
     default: 0 
@@ -47,9 +51,27 @@ const progressSchema = new mongoose.Schema({
     type: Array,
     default: []
   },
-  processedProductIds: {
-    type: [String],
-    default: []
+  // Track processed products by SEO type
+  processedProductsByType: {
+    images: {
+      type: [String],
+      default: []
+    },
+    content: {
+      type: [String],
+      default: []
+    }
+  },
+  // Track completion counts by SEO type
+  completedByType: {
+    images: {
+      type: Number,
+      default: 0
+    },
+    content: {
+      type: Number,
+      default: 0
+    }
   },
   startedAt: {
     type: Date,
@@ -74,6 +96,17 @@ const progressSchema = new mongoose.Schema({
     default: {}
   },
   error: String,
+  // Track optimization details with SEO types
+  optimizationDetails: {
+    type: Map,
+    of: {
+      completedAt: Date,
+      seoTypes: [String],
+      status: String,
+      error: String
+    },
+    default: {}
+  }
 });
 
 // Compound index to ensure one progress record per user

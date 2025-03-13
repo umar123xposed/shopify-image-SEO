@@ -14,7 +14,8 @@ const ProductsList = () => {
     completedCount: 0,
     errorCount: 0,
     pendingCount: 0,
-    processingCount: 0
+    processingCount: 0,
+    completedByType: { images: 0, content: 0 }
   });
   const navigate = useNavigate();
   const [shopName, setShopName] = useState('');
@@ -38,7 +39,23 @@ const ProductsList = () => {
     if (status === 'all') {
       setFilteredProducts(products);
     } else {
-      setFilteredProducts(products.filter(product => product.status === status));
+      setFilteredProducts(products.filter(product => {
+        if (typeof product.status === 'object') {
+          switch (status) {
+            case 'completed':
+              return product.status.images === 'completed' && product.status.content === 'completed';
+            case 'error':
+              return product.status.images === 'error' || product.status.content === 'error';
+            case 'processing':
+              return product.status.images === 'processing' || product.status.content === 'processing';
+            case 'pending':
+              return product.status.images === 'pending' || product.status.content === 'pending';
+            default:
+              return false;
+          }
+        }
+        return product.status === status;
+      }));
     }
   };
 
@@ -49,12 +66,31 @@ const ProductsList = () => {
       if (response.success) {
         setProducts(response.products || []);
         setFilteredProducts(response.products || []); // Initialize filtered products
+        
+        // Calculate completion counts based on the status objects
+        const completedCount = response.products.filter(product => 
+          product.status?.images === 'completed' && product.status?.content === 'completed'
+        ).length;
+
+        const errorCount = response.products.filter(product => 
+          product.status?.images === 'error' || product.status?.content === 'error'
+        ).length;
+
+        const processingCount = response.products.filter(product => 
+          product.status?.images === 'processing' || product.status?.content === 'processing'
+        ).length;
+
+        const pendingCount = response.products.filter(product => 
+          product.status?.images === 'pending' || product.status?.content === 'pending'
+        ).length;
+
         setStats({
           totalProducts: response.totalProducts || 0,
-          completedCount: response.completedCount || 0,
-          errorCount: response.errorCount || 0,
-          pendingCount: response.pendingCount || 0,
-          processingCount: response.processingCount || 0
+          completedCount,
+          errorCount,
+          pendingCount,
+          processingCount,
+          completedByType: response.completedByType || { images: 0, content: 0 }
         });
       } else {
         setError(response.error || 'Failed to fetch products');
@@ -102,6 +138,24 @@ const ProductsList = () => {
   };
 
   const getStatusColor = (status) => {
+    if (typeof status === 'object') {
+      // If both types are completed, show completed
+      if (status.images === 'completed' && status.content === 'completed') {
+        return 'bg-green-300 text-green-900';
+      }
+      // If either type has an error, show error
+      if (status.images === 'error' || status.content === 'error') {
+        return 'bg-red-300 text-red-900';
+      }
+      // If either type is processing, show processing
+      if (status.images === 'processing' || status.content === 'processing') {
+        return 'bg-yellow-300 text-yellow-900';
+      }
+      // Otherwise show pending
+      return 'bg-gray-300 text-gray-900';
+    }
+
+    // Fallback for string status
     switch (status) {
       case 'completed':
         return 'bg-green-300 text-green-900';
@@ -112,6 +166,28 @@ const ProductsList = () => {
       default:
         return 'bg-gray-300 text-gray-900';
     }
+  };
+
+  const getStatusText = (status) => {
+    if (typeof status === 'object') {
+      // If both types are completed, show completed
+      if (status.images === 'completed' && status.content === 'completed') {
+        return 'Completed';
+      }
+      // If either type has an error, show error
+      if (status.images === 'error' || status.content === 'error') {
+        return 'Error';
+      }
+      // If either type is processing, show processing
+      if (status.images === 'processing' || status.content === 'processing') {
+        return 'Processing';
+      }
+      // Otherwise show pending
+      return 'Pending';
+    }
+    
+    // Fallback for string status
+    return status.charAt(0).toUpperCase() + status.slice(1);
   };
 
   const getStatusCardStyle = (status) => {
@@ -189,6 +265,12 @@ const ProductsList = () => {
         >
           <h3 className="text-lg font-semibold">Completed</h3>
           <p className="text-2xl">{stats.completedCount}</p>
+          {stats.completedByType && (
+            <div className="text-sm mt-1">
+              <p>Images: {stats.completedByType.images}</p>
+              <p>Content: {stats.completedByType.content}</p>
+            </div>
+          )}
         </div>
         <div 
           className={`${getStatusCardStyle('processing')} bg-yellow-300`}
@@ -282,16 +364,33 @@ const ProductsList = () => {
                       Processed: {new Date(product.processedAt).toLocaleString()}
                     </p>
                   )}
+                  {/* Add status details */}
+                  {typeof product.status === 'object' && (
+                    <div className="mt-1 space-y-1">
+                      <p className="text-sm opacity-75">
+                        Images: <span className={`px-1 py-0.5 rounded text-xs ${getStatusColor({ images: product.status.images })}`}>
+                          {product.status.images}
+                        </span>
+                      </p>
+                      <p className="text-sm opacity-75">
+                        Content: <span className={`px-1 py-0.5 rounded text-xs ${getStatusColor({ content: product.status.content })}`}>
+                          {product.status.content}
+                        </span>
+                      </p>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`px-2 py-1 rounded text-sm ${getStatusColor(product.status)}`}>
-                    {product.status}
+                    {getStatusText(product.status)}
                   </span>
                   <div className="relative group">
                     <button
                       className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={() => handleProductSelect(product.id)}
-                      disabled={product.status === 'processing'}
+                      disabled={typeof product.status === 'object' ? 
+                        (product.status.images === 'processing' || product.status.content === 'processing') :
+                        product.status === 'processing'}
                     >
                       Process SEO
                     </button>

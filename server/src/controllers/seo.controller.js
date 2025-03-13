@@ -61,6 +61,10 @@ async function getSEOStatus(req, res) {
         isRunning: false,
         totalProducts: 0,
         completedProducts: 0,
+        completedByType: {
+          images: 0,
+          content: 0
+        },
         currentProduct: null,
         currentImage: null,
         processedImages: []
@@ -73,6 +77,7 @@ async function getSEOStatus(req, res) {
       isRunning: activeProcess ? activeProcess.isRunning : progress.isRunning || false,
       totalProducts: progress.totalProducts || 0,
       completedProducts: progress.completedProducts || 0,
+      completedByType: progress.completedByType || { images: 0, content: 0 },
       currentProduct: activeProcess ? activeProcess.currentProduct : progress.currentProduct,
       currentImage: activeProcess ? activeProcess.currentImage : progress.currentImage,
       processedImages: activeProcess ? activeProcess.processedImages : (progress.processedImages || [])
@@ -165,7 +170,7 @@ async function getAllProducts(req, res) {
     const progress = await Progress.findOne({ userId });
     console.log('Found progress:', {
       hasProgress: !!progress,
-      processedCount: progress?.processedProductIds?.length || 0,
+      processedByType: progress?.processedProductsByType || { images: [], content: [] },
       errorCount: progress?.productsWithErrors?.length || 0
     });
     
@@ -180,7 +185,7 @@ async function getAllProducts(req, res) {
         success: true,
         products: [],
         totalProducts: 0,
-        completedCount: 0,
+        completedByType: { images: 0, content: 0 },
         errorCount: 0,
         pendingCount: 0
       });
@@ -190,28 +195,39 @@ async function getAllProducts(req, res) {
     const activeProcess = activeProcesses.get(userId.toString());
     
     // Get all completed and error products from database
-    const processedProductIds = progress?.processedProductIds || [];
+    const processedByType = progress?.processedProductsByType || { images: [], content: [] };
     const productsWithErrors = progress?.productsWithErrors || [];
     const currentProcessingId = activeProcess?.currentProduct?.id;
+    const currentSeoTypes = activeProcess?.currentProduct?.seoTypes || [];
 
-    console.log('Processing status:', {
-      totalProducts: products.length,
-      processedCount: processedProductIds.length,
-      errorCount: productsWithErrors.length,
-      isActiveProcess: !!activeProcess,
-      currentProcessingId: currentProcessingId || 'none'
-    });
+    // Calculate completion counts
+    const completedByType = {
+      images: processedByType.images.length,
+      content: processedByType.content.length
+    };
 
     const productsWithStatus = products.map(product => {
-      // Determine the current status of the product
-      let status = 'pending';
+      // Determine the current status of the product for each SEO type
+      const status = {
+        images: processedByType.images.includes(product.id) ? 'completed' : 'pending',
+        content: processedByType.content.includes(product.id) ? 'completed' : 'pending'
+      };
+
+      // If product is currently being processed, update its status
       if (currentProcessingId && currentProcessingId.toString() === product.id.toString()) {
-        status = 'processing';
-      } else if (productsWithErrors.includes(product.id)) {
-        status = 'error';
-      } else if (processedProductIds.includes(product.id)) {
-        status = 'completed';
+        currentSeoTypes.forEach(type => {
+          status[type] = 'processing';
+        });
       }
+
+      // If product has errors, mark it
+      if (productsWithErrors.includes(product.id)) {
+        if (status.images !== 'completed') status.images = 'error';
+        if (status.content !== 'completed') status.content = 'error';
+      }
+
+      // Get optimization details if available
+      const optimizationDetails = progress?.optimizationDetails?.get(product.id) || {};
 
       return {
         id: product.id,
@@ -219,19 +235,32 @@ async function getAllProducts(req, res) {
         status,
         images: product.images?.length || 0,
         processedAt: progress?.productCompletionTimes?.[product.id] || null,
-        hasErrors: productsWithErrors.includes(product.id)
+        hasErrors: productsWithErrors.includes(product.id),
+        optimizationDetails
       };
     });
 
-    // Calculate counts
-    const completedCount = processedProductIds.length;
-    const errorCount = productsWithErrors.length;
-    const processingCount = currentProcessingId ? 1 : 0;
-    const pendingCount = products.length - (completedCount + errorCount + processingCount);
+    // Calculate overall counts
+    const completedCount = productsWithStatus.filter(product => 
+      product.status.images === 'completed' && product.status.content === 'completed'
+    ).length;
+
+    const errorCount = productsWithStatus.filter(product => 
+      product.status.images === 'error' || product.status.content === 'error'
+    ).length;
+
+    const processingCount = productsWithStatus.filter(product => 
+      product.status.images === 'processing' || product.status.content === 'processing'
+    ).length;
+
+    const pendingCount = productsWithStatus.filter(product => 
+      product.status.images === 'pending' && product.status.content === 'pending'
+    ).length;
 
     console.log('Sending response with counts:', {
       total: products.length,
-      completed: completedCount,
+      completedByType,
+      completedCount,
       errors: errorCount,
       processing: processingCount,
       pending: pendingCount
@@ -241,6 +270,7 @@ async function getAllProducts(req, res) {
       success: true,
       products: productsWithStatus,
       totalProducts: products.length,
+      completedByType,
       completedCount,
       errorCount,
       pendingCount,
@@ -248,15 +278,11 @@ async function getAllProducts(req, res) {
       isProcessRunning: activeProcess?.isRunning || false
     });
   } catch (error) {
-    console.error('Error fetching products:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      response: error.response?.data
-    });
+    console.error('Error getting all products:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to fetch products. Please check your Shopify credentials and try again.'
+      error: 'Failed to get products',
+      message: error.message 
     });
   }
 }

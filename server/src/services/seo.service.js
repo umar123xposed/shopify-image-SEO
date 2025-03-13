@@ -16,7 +16,7 @@ class SEOService {
     this.currentProduct = null; // Will store {id, title, images}
     this.currentImage = null;
     this.processedImages = [];
-    this.maxProcessedImages = 5;
+    this.maxProcessedImages = 8; // Reduced from 20 to 8 for better dashboard performance
     this.onProgress = null;
     this.processedProductIds = new Set(); // Track processed product IDs
     
@@ -25,6 +25,11 @@ class SEOService {
     this.maxApiErrors = 3; // Stop after 3 consecutive API errors
     this.lastError = null;
     this.productsWithErrors = new Set();
+
+    this.processedProductsByType = {
+      images: [],
+      content: []
+    };
 
     // Initialize Gemini client
     this.geminiClient = {
@@ -42,6 +47,8 @@ class SEOService {
         }
       }
     };
+
+    this.currentProductFilenames = new Set(); // Track filenames for current product
   }
 
   // Load progress from database
@@ -56,7 +63,14 @@ class SEOService {
           completedProducts: 0,
           totalProducts: 0,
           isRunning: false,
-          processedProductIds: [] // Add this field
+          processedProductsByType: {
+            images: [],
+            content: []
+          },
+          completedByType: {
+            images: 0,
+            content: 0
+          }
         });
         await progress.save();
       }
@@ -65,7 +79,8 @@ class SEOService {
         completedProducts: progress.completedProducts || 0,
         totalProducts: progress.totalProducts || 0,
         isRunning: progress.isRunning || false,
-        processedProductIds: progress.processedProductIds || [], // Return processed IDs
+        processedProductsByType: progress.processedProductsByType || { images: [], content: [] },
+        completedByType: progress.completedByType || { images: 0, content: 0 },
         currentProductId: progress.currentProductId,
         currentProductTitle: progress.currentProductTitle,
         currentImage: progress.currentImage
@@ -77,7 +92,8 @@ class SEOService {
         completedProducts: 0,
         totalProducts: 0,
         isRunning: false,
-        processedProductIds: [],
+        processedProductsByType: { images: [], content: [] },
+        completedByType: { images: 0, content: 0 },
         currentProductId: null,
         currentProductTitle: null,
         currentImage: null
@@ -88,22 +104,72 @@ class SEOService {
   // Save progress to database
   async saveProgress(productId) {
     try {
-      await Progress.findOneAndUpdate(
+      // Calculate completedByType counts from current state
+      const completedByType = {
+        images: Array.isArray(this.processedProductsByType.images) ? this.processedProductsByType.images.length : 0,
+        content: Array.isArray(this.processedProductsByType.content) ? this.processedProductsByType.content.length : 0
+      };
+
+      // Extract only the necessary string fields from currentProduct
+      const currentProductInfo = this.currentProduct ? {
+        id: this.currentProduct.id.toString(),
+        title: this.currentProduct.title,
+        seoTypes: this.currentProduct.seoTypes
+      } : null;
+
+      // Ensure we only keep the most recent images, sorted by processedAt date
+      const sortedImages = [...this.processedImages]
+        .sort((a, b) => new Date(b.processedAt || 0) - new Date(a.processedAt || 0))
+        .slice(0, this.maxProcessedImages);
+
+      const updateData = {
+        lastProductId: productId,
+        completedProducts: this.completedProducts,
+        totalProducts: this.totalProducts,
+        isRunning: this.isRunning,
+        currentProductId: currentProductInfo?.id || null,
+        currentProductTitle: currentProductInfo?.title || null,
+        currentProductSeoTypes: currentProductInfo?.seoTypes || [],
+        processedImages: sortedImages,
+        processedProductIds: Array.from(this.processedProductIds),
+        processedProductsByType: {
+          images: Array.from(new Set(this.processedProductsByType.images)),
+          content: Array.from(new Set(this.processedProductsByType.content))
+        },
+        completedByType,
+        updatedAt: new Date()
+      };
+
+      // Update progress in database
+      const updatedProgress = await Progress.findOneAndUpdate(
         { userId: this.userId },
-        { 
-          lastProductId: productId,
+        updateData,
+        { upsert: true, new: true }
+      );
+
+      // Log progress update for debugging
+      console.log('Progress saved:', {
+        completedByType,
+        totalProducts: this.totalProducts,
+        completedProducts: this.completedProducts,
+        processedImages: this.processedProductsByType.images.length,
+        processedContent: this.processedProductsByType.content.length
+      });
+
+      // Call progress callback if provided
+      if (this.onProgress) {
+        this.onProgress({
           completedProducts: this.completedProducts,
           totalProducts: this.totalProducts,
-          isRunning: this.isRunning,
-          currentProduct: this.currentProduct,
-          processedImages: this.processedImages.slice(0, this.maxProcessedImages),
-          processedProductIds: Array.from(this.processedProductIds), // Save processed IDs
-          updatedAt: new Date()
-        },
-        { upsert: true }
-      );
+          processedProductsByType: this.processedProductsByType,
+          completedByType
+        });
+      }
+
+      return updatedProgress;
     } catch (error) {
       console.error("Error saving progress:", error);
+      throw error;
     }
   }
 
@@ -193,13 +259,21 @@ class SEOService {
   }
 
   // Get image description from Gemini AI
-  async getImageDescription(base64Image, productTitle, productDescription) {
+  async getImageDescription(base64Image, productTitle, productDescription, usedFilenames = []) {
     try {
+      const filenamesContext = usedFilenames.length > 0 
+        ? `Previously used filenames for this product:
+           ${usedFilenames.join(', ')}
+           Please generate a DIFFERENT filename that has not been used before.`
+        : '';
+
       const prompt = `
 You are an expert in e-commerce SEO and product listing optimization.
 Your task is to analyze the given image with respect to its already uploaded product title and its description which is uploaded on shopify and generate:
   1️⃣ AltText: A highly descriptive, SEO-friendly alt text (125 characters max).
   2️⃣ Filename: A short, keyword-rich filename (no spaces, no special characters, no file extension).
+
+${filenamesContext}
 
 ### **Guidelines for Alt Text**:
 ✅ Clearly describe the main subject of the image with respect to its product title and product description 
@@ -211,12 +285,14 @@ Your task is to analyze the given image with respect to its already uploaded pro
 ✅ **DO NOT** add excessive words; focus on what truly matters.
 
 ### **Guidelines for Filename**:
-✅ Create a **short and keyword-optimized filename**.  
-✅ Use **hyphens (-) instead of spaces**.  
-✅ Focus on **high-ranking search terms** related to the product.  
-✅ **DO NOT** use unnecessary words like "photo", "image", or "screenshot".  
-✅ **DO NOT** include the file extension (.jpg, .png, etc.).  
-✅ **DO NOT** use special characters, only letters, numbers, and hyphens.
+✅ Create a **short and keyword-optimized filename**
+✅ Use **hyphens (-) instead of spaces**
+✅ Focus on **high-ranking search terms** related to the product
+✅ Make the filename UNIQUE - do not use any of the previously used filenames
+✅ Add distinguishing features if needed (color, pattern, angle, etc.)
+✅ **DO NOT** use unnecessary words like "photo", "image", or "screenshot"
+✅ **DO NOT** include the file extension (.jpg, .png, etc.)
+✅ **DO NOT** use special characters, only letters, numbers, and hyphens
 
 ### **Example Outputs**:
 📌 **Example 1 (Red Sneakers)**  
@@ -237,9 +313,7 @@ AltText: <description>
 Filename: <name> (WITHOUT .jpg extension)**
 `;
 
-      const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${this.geminiKey}`,
-        {
+      const response = await this.geminiClient.generateContent({
           contents: [
             {
               parts: [
@@ -250,11 +324,9 @@ Filename: <name> (WITHOUT .jpg extension)**
               ],
             },
           ],
-        },
-        { headers: { "Content-Type": "application/json" } }
-      );
+      });
 
-      const textResponse = response.data.candidates[0].content.parts[0].text;
+      const textResponse = response.candidates[0].content.parts[0].text;
       console.log(`🧠 Raw AI Response:\n${textResponse}`);
 
       const match = textResponse.match(/AltText:\s*(.*?)\s*\nFilename:\s*(.*)/i);
@@ -281,20 +353,51 @@ Filename: <name> (WITHOUT .jpg extension)**
       }
 
       const base64Image = Buffer.from(imageBuffer).toString('base64');
-      const result = await this.getImageDescription(base64Image, product.title, product.body_html);
+      const result = await this.getImageDescription(base64Image, product.title, product.body_html, Array.from(this.currentProductFilenames));
       
       if (result.error) {
-        return { error: result.error };
+        // Check for API errors
+        if (result.error.includes('429') || result.error.includes('401')) {
+          this.apiErrorCount++;
+          console.log(`API Error count: ${this.apiErrorCount}/${this.maxApiErrors}`);
+
+          if (this.apiErrorCount >= this.maxApiErrors) {
+            await this.forceStop('Process stopped: Multiple API errors occurred. Please check your API key and restart the process.');
+            return { 
+              success: false, 
+              error: 'API key error - process stopped', 
+              apiKeyError: true 
+            };
+          }
+        }
+        this.productsWithErrors.add(product.id);
+        await Progress.findOneAndUpdate(
+          { userId: this.userId },
+          { 
+            $addToSet: { productsWithErrors: product.id }
+          }
+        );
+        return { success: false, error: result.error };
       }
+
+      // Reset error count since AI request succeeded
+      this.apiErrorCount = 0;
 
       return {
         success: true,
-        newAltText: result.altText,
-        newFilename: result.fileName
+        altText: result.altText,
+        fileName: result.fileName
       };
     } catch (error) {
-      console.error('AI Generation Error:', error);
-      return { error: error.message };
+      console.error('Process Image Error:', error);
+      this.productsWithErrors.add(product.id);
+      await Progress.findOneAndUpdate(
+        { userId: this.userId },
+        { 
+          $addToSet: { productsWithErrors: product.id }
+        }
+      );
+      throw error;
     }
   }
 
@@ -378,14 +481,24 @@ Filename: <name> (WITHOUT .jpg extension)**
         }
       );
 
-      if (!response.data || !response.data.product || !response.data.product.variants) {
-        throw new Error('Invalid response from Shopify API when fetching variants');
+      if (!response.data || !response.data.product) {
+        throw new Error('Invalid response from Shopify API when fetching product details');
       }
 
-      return response.data.product.variants;
+      // Ensure we always return an array for variants
+      const variants = response.data.product.variants || [];
+      const product = response.data.product;
+
+      return {
+        product,
+        variants: Array.isArray(variants) ? variants : []
+      };
     } catch (error) {
-      console.error("Error fetching product variants:", error.message);
-      throw error;
+      console.error("Error fetching product details:", error.message);
+      return {
+        product: null,
+        variants: []
+      };
     }
   }
 
@@ -432,9 +545,9 @@ Filename: <name> (WITHOUT .jpg extension)**
       
       await axios.delete(
         url,
-        {
-          headers: {
-            "X-Shopify-Access-Token": this.shopifyKey,
+              {
+                headers: {
+                  "X-Shopify-Access-Token": this.shopifyKey,
             "Content-Type": "application/json"
           }
         }
@@ -452,10 +565,19 @@ Filename: <name> (WITHOUT .jpg extension)**
     }
   }
 
-  async processImage(image, product) {
+  async processImage(image, product, usedFilenames = []) {
     try {
       if (!this.isRunning) {
         return { success: false, error: 'Process stopped' };
+      }
+
+      // Check if this image has already been processed
+      const existingProcessed = this.processedImages.find(
+        p => p.oldImageId === image.id && p.productId === product.id
+      );
+      if (existingProcessed) {
+        console.log(`Image ${image.id} for product ${product.id} has already been processed, skipping...`);
+        return { success: true, alreadyProcessed: true };
       }
 
       // Download the image for AI processing only
@@ -466,62 +588,62 @@ Filename: <name> (WITHOUT .jpg extension)**
       }
 
       // Get AI-generated content
-      const result = await this.getAIGeneratedContent(image, product);
+      const result = await this.getAIGeneratedContent(image, product, usedFilenames);
       
       if (result.error) {
-        // Check for API errors
-        if (result.error.includes('429') || result.error.includes('401')) {
-          this.apiErrorCount++;
-          console.log(`API Error count: ${this.apiErrorCount}/${this.maxApiErrors}`);
-
-          if (this.apiErrorCount >= this.maxApiErrors) {
-            await this.forceStop('Process stopped: Multiple API errors occurred. Please check your API key and restart the process.');
-            return { 
-              success: false, 
-              error: 'API key error - process stopped', 
-              apiKeyError: true 
-            };
-          }
-        }
-        this.productsWithErrors.add(product.id);
-        await Progress.findOneAndUpdate(
-          { userId: this.userId },
-          { 
-            $addToSet: { productsWithErrors: product.id }
-          }
-        );
+        // Handle error cases...
         return { success: false, error: result.error };
       }
 
       // Reset error count since AI request succeeded
       this.apiErrorCount = 0;
 
-      // Upload a new image with the AI-generated content
       try {
+        // First, delete any existing duplicate images
+        const productDetails = await this.getProductVariants(product.id);
+        const existingImages = productDetails.product?.images || [];
+        const duplicates = existingImages.filter(img => 
+          img.id !== image.id && 
+          (img.src === image.src || img.alt === result.altText)
+        );
+
+        for (const duplicate of duplicates) {
+          console.log(`Deleting duplicate image ${duplicate.id} for product ${product.id}...`);
+          const deleteResult = await this.deleteShopifyImage(product.id, duplicate.id);
+          if (!deleteResult.success) {
+            console.warn(`Failed to delete duplicate image ${duplicate.id}: ${deleteResult.error}`);
+          }
+        }
+
+        // Upload the new image
         console.log(`Uploading new image for product ${product.id} with new alt text and filename...`);
         const uploadResult = await this.uploadNewShopifyImage(
           product.id, 
           image,
-          result.newAltText, 
-          result.newFilename
+          result.altText, 
+          result.fileName
         );
+
+        if (!uploadResult.success) {
+          throw new Error('Failed to upload new image');
+        }
 
         // Update current image with new information
         this.currentImage = {
           ...this.currentImage,
           newImageId: uploadResult.newImageId,
           newImageSrc: uploadResult.newImageSrc,
-          newAltText: result.newAltText,
-          newFilename: result.newFilename,
+          newAltText: result.altText,
+          newFilename: result.fileName,
           status: 'completed'
         };
 
         // Get all variants for this product
         console.log(`Fetching variants for product ${product.id}...`);
-        const variants = await this.getProductVariants(product.id);
+        const variantDetails = await this.getProductVariants(product.id);
         
         // Find variants using the old image
-        const variantsUsingOldImage = variants.filter(variant => 
+        const variantsUsingOldImage = variantDetails.variants.filter(variant => 
           variant.image_id === parseInt(image.id)
         );
         
@@ -533,14 +655,38 @@ Filename: <name> (WITHOUT .jpg extension)**
           }
         }
         
-        // Delete the old image
+        // Delete the old image only after variants are updated and only if it still exists
         console.log(`Deleting old image ${image.id} for product ${product.id}...`);
-        await this.deleteShopifyImage(product.id, image.id);
+        const oldImageExists = (await this.getProductVariants(product.id))
+          .product?.images?.some(img => img.id === parseInt(image.id));
+        
+        if (oldImageExists) {
+          const deleteResult = await this.deleteShopifyImage(product.id, image.id);
+          if (!deleteResult.success) {
+            console.error(`Failed to delete old image: ${deleteResult.error}`);
+          }
+        } else {
+          console.log(`Old image ${image.id} no longer exists, skipping deletion`);
+        }
+
+        // Add to processed images to prevent reprocessing
+        const processedImage = {
+          id: uploadResult.newImageId,
+          src: uploadResult.newImageSrc,
+          productId: product.id,
+          productTitle: product.title,
+          status: 'completed',
+          newAltText: result.altText,
+          newFilename: result.fileName,
+          oldImageId: image.id,
+          processedAt: new Date()
+        };
+        this.addToProcessedImages(processedImage);
 
         return {
           success: true,
-          newAltText: result.newAltText,
-          newFilename: result.newFilename,
+          newAltText: result.altText,
+          newFilename: result.fileName,
           oldImageId: image.id,
           newImageId: uploadResult.newImageId,
           newImageSrc: uploadResult.newImageSrc,
@@ -553,7 +699,6 @@ Filename: <name> (WITHOUT .jpg extension)**
           error: `Failed to update Shopify: ${updateError.message}`
         };
       }
-
     } catch (error) {
       console.error('Process Image Error:', error);
       this.productsWithErrors.add(product.id);
@@ -626,63 +771,72 @@ Filename: <name> (WITHOUT .jpg extension)**
   }
 
   async start(progressCallback, startFresh = false, startFromProductId = null, seoTypes = ['images', 'content']) {
-    // First reset any stale state
-    await this.resetState();
-    
-    if (this.isRunning) return;
-    
-    // Validate seoTypes
-    if (!Array.isArray(seoTypes) || seoTypes.length === 0) {
-      throw new Error('Invalid SEO types provided');
-    }
-    
-    console.log('Starting SEO process with types:', seoTypes);
-    
-    this.isRunning = true;
-    this.onProgress = progressCallback;
-    this.processedImages = [];
-    this.apiErrorCount = 0; // Reset error count on start
-    
     try {
-      // Load existing progress first
-      const existingProgress = await Progress.findOne({ userId: this.userId });
-      
+      // Reset state if starting fresh
       if (startFresh) {
-        // Reset progress in database
         this.processedProductIds.clear();
+        this.processedImages = [];
+        this.completedProducts = 0;
+        this.processedProductsByType = {
+          images: [],
+          content: []
+        };
+        
+        // Clear progress in database when starting fresh
         await Progress.findOneAndUpdate(
           { userId: this.userId },
-          { 
-            lastProductId: null,
-            currentProductId: null,
-            currentProductTitle: null,
-            completedProducts: 0,
-            totalProducts: 0,
-            isRunning: true,
-            startedAt: new Date(),
-            processedProductIds: [], // Clear processed products only if startFresh is true
-            productsWithErrors: [], // Clear errors too when starting fresh
-            seoTypes: seoTypes // Store the SEO types in progress
+          {
+            $set: {
+              processedProductIds: [],
+              processedImages: [],
+              completedProducts: 0,
+              processedProductsByType: { images: [], content: [] },
+              completedByType: { images: 0, content: 0 },
+              isRunning: true,
+              startedAt: new Date()
+            }
           },
           { upsert: true }
         );
-        console.log('🔄 Starting fresh: Reset progress in database');
-      } else {
-        // Load existing processed products if not starting fresh
-        if (existingProgress?.processedProductIds) {
-          this.processedProductIds = new Set(existingProgress.processedProductIds);
-          console.log(`📝 Loaded ${this.processedProductIds.size} previously completed products`);
-        }
-        
-        // Update SEO types in progress
-        await Progress.findOneAndUpdate(
-          { userId: this.userId },
-          { $set: { seoTypes: seoTypes } }
-        );
       }
 
+      // Get existing progress from database
+      const existingProgress = await Progress.findOne({ userId: this.userId });
+      
+      if (!startFresh && existingProgress) {
+        // Restore processed products state
+        this.processedProductsByType = {
+          images: Array.isArray(existingProgress.processedProductsByType?.images) 
+            ? existingProgress.processedProductsByType.images 
+            : [],
+          content: Array.isArray(existingProgress.processedProductsByType?.content) 
+            ? existingProgress.processedProductsByType.content 
+            : []
+        };
+        
+        if (existingProgress.processedProductIds) {
+          this.processedProductIds = new Set(existingProgress.processedProductIds);
+        }
+        
+        this.completedProducts = existingProgress.completedProducts || 0;
+        
+        console.log('Restored progress state:', {
+          processedImages: this.processedProductsByType.images.length,
+          processedContent: this.processedProductsByType.content.length,
+          completedProducts: this.completedProducts
+        });
+      }
+
+      // Fetch all products
       const products = await this.fetchProducts();
+      if (!products || products.length === 0) {
+        throw new Error('No products found');
+      }
+
       this.totalProducts = products.length;
+      this.isRunning = true;
+      this.onProgress = progressCallback;
+
       let startIndex = 0;
 
       if (startFromProductId) {
@@ -731,12 +885,14 @@ Filename: <name> (WITHOUT .jpg extension)**
           totalProducts: this.totalProducts,
           completedProducts: this.completedProducts,
           isRunning: true,
-          processedProductIds: Array.from(this.processedProductIds) // Ensure we preserve existing completed products
+          processedProductIds: Array.from(this.processedProductIds), // Ensure we preserve existing completed products
+          processedProductsByType: existingProgress.processedProductsByType || { images: [], content: [] },
+          completedByType: existingProgress.completedByType || { images: 0, content: 0 }
         },
         { upsert: true }
       );
 
-      this.updateProgress();
+        this.updateProgress();
 
       // Process remaining products with explicit seoTypes
       for (const product of remainingProducts) {
@@ -751,17 +907,37 @@ Filename: <name> (WITHOUT .jpg extension)**
         // Pass the seoTypes explicitly
         await this.processProduct(product, seoTypes);
         
-        // Update progress after each product
+        // Update progress after each product with current state
         await Progress.findOneAndUpdate(
           { userId: this.userId },
           { 
             completedProducts: this.completedProducts,
             processedProductIds: Array.from(this.processedProductIds),
+            processedProductsByType: this.processedProductsByType,
+            completedByType: {
+              images: this.processedProductsByType.images.length,
+              content: this.processedProductsByType.content.length
+            },
             currentProductId: product.id,
             currentProductTitle: product.title,
-            seoTypes: seoTypes // Ensure SEO types are stored
-          }
+            seoTypes: seoTypes,
+            totalProducts: this.totalProducts
+          },
+          { new: true }
         );
+
+        // Call progress callback if provided
+        if (this.onProgress) {
+          this.onProgress({
+            completedProducts: this.completedProducts,
+            totalProducts: this.totalProducts,
+            processedProductsByType: this.processedProductsByType,
+            completedByType: {
+              images: this.processedProductsByType.images.length,
+              content: this.processedProductsByType.content.length
+            }
+          });
+        }
       }
     } catch (error) {
       console.error("❌ Error in SEO process:", error);
@@ -774,214 +950,78 @@ Filename: <name> (WITHOUT .jpg extension)**
     }
   }
 
-  async processProduct(product, seoTypes) {
+  async processProduct(product, seoTypes = ['images', 'content']) {
     try {
-      if (!this.isRunning) return;
+      console.log(`🔄 Processing product: ${product.title} (ID: ${product.id})`);
+      console.log(`SEO types to process: ${seoTypes.join(', ')}`);
       
-      // Validate seoTypes at the start of processing
-      if (!Array.isArray(seoTypes) || seoTypes.length === 0) {
-        throw new Error('Invalid SEO types provided to processProduct');
-      }
-      
-      console.log(`Processing product ${product.id} with SEO types:`, seoTypes);
-      
-      // Store only necessary product information
       this.currentProduct = {
         id: product.id,
         title: product.title,
-        imageCount: product.images?.length || 0,
-        seoTypes: seoTypes // Track which types are being processed
+        seoTypes
       };
-      
-      this.updateProgress();
 
-      // Only process title and description if 'content' type is selected AND 'images' is NOT selected
-      if (seoTypes.includes('content') && !seoTypes.includes('images')) {
-        console.log(`Optimizing only title and description for product ${product.id}...`);
-        
-        // Use the first image for content optimization
-        const mainImage = product.images[0];
-        const imageBuffer = await this.downloadImage(mainImage.src);
-        const base64Image = Buffer.from(imageBuffer).toString('base64');
-        
-        const contentOptimization = await this.getTitleDescriptionOptimization(
-          product.title,
-          product.body_html,
-          base64Image
-        );
+      let contentOptimized = false;
+      let imagesOptimized = false;
 
-        if (contentOptimization.error) {
-          console.error(`Error optimizing content for product ${product.id}:`, contentOptimization.error);
-          throw new Error(`Content optimization failed: ${contentOptimization.error}`);
-        }
-
-        // Update product details in Shopify
-        const updateResult = await this.updateProductDetails(
-          product.id,
-          contentOptimization.title,
-          contentOptimization.description
-        );
-
-        if (!updateResult.success) {
-          throw new Error(`Failed to update product details: ${updateResult.error}`);
-        }
-
-        console.log(`✅ Successfully updated title and description for product ${product.id}`);
-      }
-
-      // Only process images if 'images' type is selected AND 'content' is NOT selected
-      if (seoTypes.includes('images') && !seoTypes.includes('content')) {
-        console.log(`Processing only images for product ${product.id}...`);
-        
-        for (const image of product.images) {
-          if (!this.isRunning) return;
-          
-          this.currentImage = {
-            id: image.id,
-            src: image.src,
-            productId: product.id,
-            productTitle: product.title,
-            status: 'processing'
-          };
-          
-          const result = await this.processImage(image, product);
-          
-          if (!result.success) {
-            if (result.apiKeyError) {
-              this.currentImage.status = 'error';
-              this.currentImage.error = 'API key error';
-              this.addToProcessedImages(this.currentImage);
-              return;
-            }
-            this.currentImage.status = 'error';
-            this.currentImage.error = result.error;
-            this.addToProcessedImages(this.currentImage);
-            continue;
+      // Process content SEO if selected
+      if (seoTypes.includes('content')) {
+        try {
+          console.log(`Starting content optimization for product ${product.id}`);
+          await this.optimizeProductContent(product);
+          if (!this.processedProductsByType.content.includes(product.id)) {
+            this.processedProductsByType.content.push(product.id);
+            contentOptimized = true;
+            console.log(`✅ Content optimization completed for product ${product.id}`);
           }
-          
-          // Update image with success data
-          this.currentImage.status = 'completed';
-          this.currentImage.newAltText = result.newAltText;
-          this.currentImage.newFilename = result.newFilename;
-          this.addToProcessedImages(this.currentImage);
+        } catch (error) {
+          console.error(`Error optimizing content for product ${product.title}:`, error);
+          throw error;
         }
       }
 
-      // Process both if both types are selected
-      if (seoTypes.includes('images') && seoTypes.includes('content')) {
-        console.log(`Processing both content and images for product ${product.id}...`);
-        
-        // First optimize title and description
-        const mainImage = product.images[0];
-        const imageBuffer = await this.downloadImage(mainImage.src);
-        const base64Image = Buffer.from(imageBuffer).toString('base64');
-        
-        const contentOptimization = await this.getTitleDescriptionOptimization(
-          product.title,
-          product.body_html,
-          base64Image
-        );
-
-        if (contentOptimization.error) {
-          console.error(`Error optimizing content for product ${product.id}:`, contentOptimization.error);
-          throw new Error(`Content optimization failed: ${contentOptimization.error}`);
-        }
-
-        // Update product details in Shopify
-        const updateResult = await this.updateProductDetails(
-          product.id,
-          contentOptimization.title,
-          contentOptimization.description
-        );
-
-        if (!updateResult.success) {
-          throw new Error(`Failed to update product details: ${updateResult.error}`);
-        }
-
-        console.log(`✅ Successfully updated title and description for product ${product.id}`);
-
-        // Then process all images
-        for (const image of product.images) {
-          if (!this.isRunning) return;
-          
-          this.currentImage = {
-            id: image.id,
-            src: image.src,
-            productId: product.id,
-            productTitle: contentOptimization.title, // Use the optimized title
-            status: 'processing'
-          };
-          
-          const result = await this.processImage(image, {
-            ...product,
-            title: contentOptimization.title,
-            body_html: contentOptimization.description
-          });
-          
-          if (!result.success) {
-            if (result.apiKeyError) {
-              this.currentImage.status = 'error';
-              this.currentImage.error = 'API key error';
-              this.addToProcessedImages(this.currentImage);
-              return;
-            }
-            this.currentImage.status = 'error';
-            this.currentImage.error = result.error;
-            this.addToProcessedImages(this.currentImage);
-            continue;
+      // Process image SEO if selected
+      if (seoTypes.includes('images')) {
+        try {
+          console.log(`Starting image optimization for product ${product.id}`);
+          await this.optimizeProductImages(product);
+          if (!this.processedProductsByType.images.includes(product.id)) {
+            this.processedProductsByType.images.push(product.id);
+            imagesOptimized = true;
+            console.log(`✅ Image optimization completed for product ${product.id}`);
           }
-          
-          // Update image with success data
-          this.currentImage.status = 'completed';
-          this.currentImage.newAltText = result.newAltText;
-          this.currentImage.newFilename = result.newFilename;
-          this.addToProcessedImages(this.currentImage);
+        } catch (error) {
+          console.error(`Error optimizing images for product ${product.title}:`, error);
+          throw error;
         }
       }
-      
-      // Mark product as completed
-      this.processedProductIds.add(product.id);
-      this.completedProducts++;
-      
-      // Update completion time in database
-      await Progress.findOneAndUpdate(
-        { userId: this.userId },
-        { 
-          $set: { 
-            [`productCompletionTimes.${product.id}`]: new Date(),
-            completedProducts: this.completedProducts,
-            processedProductIds: Array.from(this.processedProductIds),
-            [`optimizationDetails.${product.id}`]: {
-              completedAt: new Date(),
-              seoTypes: seoTypes,
-              status: 'completed'
-            }
-          }
+
+      // Add to processed products set if all selected types were processed
+      const allSelectedTypesProcessed = 
+        (!seoTypes.includes('content') || contentOptimized) && 
+        (!seoTypes.includes('images') || imagesOptimized);
+
+      if (allSelectedTypesProcessed) {
+        if (!this.processedProductIds.has(product.id)) {
+          this.processedProductIds.add(product.id);
+          this.completedProducts++;
         }
-      );
-      
-      // Clear current product and image
-      this.currentProduct = null;
-      this.currentImage = null;
-      this.updateProgress();
-      
+        
+        console.log(`✅ All selected SEO types processed for product ${product.id}`);
+        console.log('Current progress:', {
+          completedProducts: this.completedProducts,
+          totalProducts: this.totalProducts,
+          processedImages: this.processedProductsByType.images.length,
+          processedContent: this.processedProductsByType.content.length
+        });
+
+        // Save progress immediately after completing all types
+        await this.saveProgress(product.id);
+      }
+
+      return true;
     } catch (error) {
-      console.error('Process Product Error:', error);
-      this.productsWithErrors.add(product.id);
-      await Progress.findOneAndUpdate(
-        { userId: this.userId },
-        { 
-          $addToSet: { productsWithErrors: product.id },
-          $set: {
-            [`optimizationDetails.${product.id}`]: {
-              completedAt: new Date(),
-              seoTypes: seoTypes,
-              status: 'error',
-              error: error.message
-            }
-          }
-        }
-      );
+      console.error(`Failed to process product ${product.title}:`, error);
       throw error;
     }
   }
@@ -1002,10 +1042,15 @@ Filename: <name> (WITHOUT .jpg extension)**
       processedAt: new Date()
     };
 
+    // Add the new image to the beginning of the array
     this.processedImages.unshift(processedImage);
+    
+    // Keep only the most recent images up to the maximum limit
     if (this.processedImages.length > this.maxProcessedImages) {
-      this.processedImages.pop();
+      this.processedImages = this.processedImages.slice(0, this.maxProcessedImages);
     }
+    
+    // Update progress in database
     this.updateProgress();
   }
 
@@ -1183,6 +1228,87 @@ Optimized Description:
       success: false,
       error: lastError.message
     };
+  }
+
+  async optimizeProductContent(product) {
+    try {
+      console.log(`Optimizing content for product ${product.title}...`);
+      
+      // Get the first image for content optimization
+      const mainImage = product.images[0];
+      const imageBuffer = await this.downloadImage(mainImage.src);
+      const base64Image = Buffer.from(imageBuffer).toString('base64');
+      
+      // Get optimized content from AI
+      const contentOptimization = await this.getTitleDescriptionOptimization(
+        product.title,
+        product.body_html,
+        base64Image
+      );
+
+      if (contentOptimization.error) {
+        console.error(`Error optimizing content for product ${product.id}:`, contentOptimization.error);
+        throw new Error(`Content optimization failed: ${contentOptimization.error}`);
+      }
+
+      // Update product details in Shopify
+      const updateResult = await this.updateProductDetails(
+        product.id,
+        contentOptimization.title,
+        contentOptimization.description
+      );
+
+      if (!updateResult.success) {
+        throw new Error(`Failed to update product details: ${updateResult.error}`);
+      }
+
+      console.log(`✅ Successfully updated title and description for product ${product.id}`);
+      return true;
+    } catch (error) {
+      console.error(`Error in optimizeProductContent for ${product.title}:`, error);
+      throw error;
+    }
+  }
+
+  async optimizeProductImages(product) {
+    try {
+      console.log(`Processing images for product ${product.id}...`);
+      
+      // Clear filenames set for new product
+      this.currentProductFilenames.clear();
+      
+      // Process all images
+      for (const image of product.images) {
+        if (!this.isRunning) return;
+        
+        this.currentImage = {
+          id: image.id,
+          src: image.src,
+          productId: product.id,
+          productTitle: product.title,
+          status: 'processing'
+        };
+        
+        // Pass current set of filenames to ensure uniqueness
+        const result = await this.processImage(image, product, Array.from(this.currentProductFilenames));
+        
+        if (result.success && result.newFilename) {
+          // Add the new filename to our set
+          this.currentProductFilenames.add(result.newFilename);
+        }
+        
+        // Update image with success data
+        this.currentImage.status = 'completed';
+        this.currentImage.newAltText = result.newAltText;
+        this.currentImage.newFilename = result.newFilename;
+        this.addToProcessedImages(this.currentImage);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`Error in optimizeProductImages for ${product.title}:`, error);
+      throw error;
+    }
   }
 }
 

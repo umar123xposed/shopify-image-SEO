@@ -34,6 +34,8 @@ function ImageCard({ image, index }) {
   const statusColor = statusColors[status] || statusColors.pending;
   const statusIcon = statusIcons[status] || null;
 
+ 
+
   return (
     <div className={`bg-gray-800 rounded-lg overflow-hidden border ${statusColor}`}>
       <div className="relative aspect-square">
@@ -102,27 +104,15 @@ function ImageCard({ image, index }) {
   );
 }
 
-// function StatCard({ title, value, icon }) {
-//   return (
-//     <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl border border-white/20">
-//       <div className="flex items-center justify-between">
-//         <div>
-//           <p className="text-sm font-medium text-gray-300">{title}</p>
-//           <p className="mt-2 text-3xl font-bold text-white">{value}</p>
-//         </div>
-//         <div className="p-3 bg-white/5 rounded-lg">
-//           {icon}
-//         </div>
-//       </div>
-//     </div>
-//   );
-// }
 
 function Dashboard() {
   const [status, setStatus] = useState({
     isRunning: false,
     totalProducts: 0,
-    completedProducts: 0,
+    completedByType: {
+      images: 0,
+      content: 0
+    },
     currentProduct: null,
     currentImage: null,
     processedImages: [],
@@ -133,13 +123,21 @@ function Dashboard() {
   const [error, setError] = useState('');
   const [showStartFromModal, setShowStartFromModal] = useState(false);
   const [startFromProductId, setStartFromProductId] = useState('');
+  const [shopname, setShopName]= useState("")
 
   // Fetch status periodically
   useEffect(() => {
     const fetchStatus = async () => {
       try {
         const data = await ApiService.getSEOStatus();
-        setStatus(data);
+        // Ensure processedImages is always an array and deduplicated
+        const processedImages = Array.isArray(data.processedImages) ? data.processedImages : [];
+        setStatus({
+          ...data,
+          processedImages: [...new Map(processedImages.map(img => [img.id, img])).values()]
+            .sort((a, b) => new Date(b.processedAt || 0) - new Date(a.processedAt || 0))
+            .slice(0, 8)
+        });
         setError('');
       } catch (err) {
         console.error('Error fetching status:', err);
@@ -151,6 +149,13 @@ function Dashboard() {
     const interval = setInterval(fetchStatus, 3000);
     
     return () => clearInterval(interval);
+  }, []);
+  useEffect(() => {
+    // Get shop name from localStorage
+    const user = JSON.parse(localStorage.getItem('user'));
+    if (user && user.shopName) {
+      setShopName(user.shopName);
+    }
   }, []);
 
   const handleStart = async (startFresh = false, productId = null) => {
@@ -198,139 +203,165 @@ function Dashboard() {
     handleStart(false, startFromProductId.trim());
   };
 
-  // Calculate progress percentage
-  const progressPercentage = status.totalProducts > 0 
-    ? Math.round((status.completedProducts / status.totalProducts) * 100) 
-    : 0;
+  // Calculate progress percentage for each type
+  const progressPercentage = {
+    images: status.totalProducts > 0 
+      ? Math.round((status.completedByType.images / status.totalProducts) * 100) 
+      : 0,
+    content: status.totalProducts > 0 
+      ? Math.round((status.completedByType.content / status.totalProducts) * 100) 
+      : 0
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <main className="container mx-auto px-4 py-8">
-        {/* Status Card */}
-        <div className="bg-gray-800 rounded-xl shadow-xl p-6 mb-8">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
-            <div>
-              <h2 className="text-2xl font-bold mb-2">SEO Optimization Status</h2>
-              <p className="text-gray-400">
-                {status.isRunning 
-                  ? 'Optimization in progress...' 
-                  : status.completedProducts > 0 
-                    ? 'Optimization paused' 
-                    : 'Ready to start optimization'}
-              </p>
-            </div>
-            
-            <div className="mt-4 md:mt-0 flex space-x-3">
-              {!status.isRunning ? (
-                <>
-                  <button
-                    onClick={() => handleStart(false)}
-                    disabled={loading}
-                    className={`px-4 py-2 rounded-md ${
-                      status.completedProducts > 0 
-                        ? 'bg-indigo-600 hover:bg-indigo-700' 
-                        : 'bg-gray-600 cursor-not-allowed'
-                    } transition-colors`}
-                  >
-                    Resume
-                  </button>
-                  <button
-                    onClick={() => setShowStartFromModal(true)}
-                    disabled={loading}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
-                  >
-                    Start from ID
-                  </button>
-                  <button
-                    onClick={() => handleStart(true)}
-                    disabled={loading}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-md transition-colors"
-                  >
-                    Start Fresh
-                  </button>
-                </>
-              ) : (
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold">SEO Dashboard</h1>
+          <div className="flex gap-4">
+            {!status.isRunning ? (
+              <>
                 <button
-                  onClick={handleStop}
+                  onClick={() => handleStart(false)}
                   disabled={loading}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+                  className={`px-4 py-2 rounded-md ${
+                    status.completedByType.images > 0 
+                      ? 'bg-indigo-600 hover:bg-indigo-700' 
+                      : 'bg-gray-600 cursor-not-allowed'
+                  } transition-colors`}
                 >
-                  Stop
+                  Resume
                 </button>
-              )}
-            </div>
+                <button
+                  onClick={() => setShowStartFromModal(true)}
+                  disabled={loading}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                >
+                  Start from ID
+                </button>
+                <button
+                  onClick={() => handleStart(true)}
+                  disabled={loading}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-md transition-colors"
+                >
+                  Start Fresh
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleStop}
+                disabled={loading}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+              >
+                Stop
+              </button>
+            )}
+          </div>
+        </div>
+        
+        {error && (
+          <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded mb-6" role="alert">
+            <span className="block sm:inline">{error}</span>
+          </div>
+        )}
+        
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+          <div className="bg-gray-700/50 rounded-lg p-4">
+            <h3 className="text-lg font-medium mb-2">Total Products</h3>
+            <p className="text-3xl font-bold">{status.totalProducts}</p>
           </div>
           
-          {error && (
-            <div className="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded mb-6" role="alert">
-              <span className="block sm:inline">{error}</span>
+          <div className="bg-gray-700/50 rounded-lg p-4">
+            <h3 className="text-lg font-medium mb-2">Image SEO Completed</h3>
+            <p className="text-3xl font-bold">{status.completedByType.images}</p>
+            <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+              <div 
+                className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${progressPercentage.images}%` }}
+              ></div>
             </div>
-          )}
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div className="bg-gray-700/50 rounded-lg p-4">
-              <h3 className="text-lg font-medium mb-2">Total Products</h3>
-              <p className="text-3xl font-bold">{status.totalProducts}</p>
-            </div>
-            
-            <div className="bg-gray-700/50 rounded-lg p-4">
-              <h3 className="text-lg font-medium mb-2">Completed</h3>
-              <p className="text-3xl font-bold">{status.completedProducts}</p>
-            </div>
-            
-            <div className="bg-gray-700/50 rounded-lg p-4">
-              <h3 className="text-lg font-medium mb-2">Progress</h3>
-              <p className="text-3xl font-bold">{progressPercentage}%</p>
-            </div>
+            <p className="text-sm text-gray-400 mt-1">{progressPercentage.images}% Complete</p>
           </div>
-          
-          <div className="w-full bg-gray-700 rounded-full h-4 mb-2">
-            <div 
-              className="bg-indigo-600 h-4 rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${progressPercentage}%` }}
-            ></div>
-          </div>
-          
-          {status.currentProduct && (
-            <p className="text-sm text-gray-400">
-              Currently processing: <span className="font-medium text-indigo-400">{status.currentProduct.title || 'Unknown Product'}</span>
-            </p>
-          )}
 
-          {/* Error Display */}
-          {status.lastError && (
-            <div className="mt-4 p-4 bg-red-900/50 rounded-lg border border-red-700">
-              <div className="flex items-start">
-                <div className="flex-shrink-0">
-                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                </div>
-                <div className="ml-3">
-                  <h3 className="text-sm font-medium text-red-300">
-                    {status.apiErrorCount > 0 ? (
-                      <>
-                        API Error Count: {status.apiErrorCount}/{3}
-                        {status.apiErrorCount >= 3 && (
-                          <span className="block text-red-400 mt-1">
-                            Process stopped automatically due to multiple API errors.
-                            Please check your API key and restart the process.
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      'Error occurred'
-                    )}
-                  </h3>
-                  <div className="mt-2 text-sm text-red-200">
-                    {status.lastError}
-                  </div>
+          <div className="bg-gray-700/50 rounded-lg p-4">
+            <h3 className="text-lg font-medium mb-2">Content SEO Completed</h3>
+            <p className="text-3xl font-bold">{status.completedByType.content}</p>
+            <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+              <div 
+                className="bg-green-600 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${progressPercentage.content}%` }}
+              ></div>
+            </div>
+            <p className="text-sm text-gray-400 mt-1">{progressPercentage.content}% Complete</p>
+          </div>
+
+          <div className="bg-gray-700/50 rounded-lg p-4">
+            <h3 className="text-lg font-medium mb-2">Overall Progress</h3>
+            <p className="text-3xl font-bold">
+              {Math.round((progressPercentage.images + progressPercentage.content) / 2)}%
+            </p>
+            <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+              <div 
+                className="bg-indigo-600 h-2 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${(progressPercentage.images + progressPercentage.content) / 2}%` }}
+              ></div>
+            </div>
+          </div>
+        </div>
+        
+        {status.currentProduct && (
+          <div className="bg-gray-700/50 rounded-lg p-4 mb-6">
+            <h3 className="text-lg font-medium mb-2">Currently Processing</h3>
+            <p className="text-indigo-400">
+              <a href={`https://admin.shopify.com/store/${shopname}/products/${status.currentProduct.id}`} target='_blank' rel="noopener noreferrer" 
+                    className="font-semibold hover:text-green-400 transition-colors">{status.currentProduct.title || 'Unknown Product'}</a>
+              {status.currentProduct.seoTypes && (
+                <span className="text-sm text-gray-400 ml-2">
+                  ({status.currentProduct.seoTypes.join(' & ')} optimization)
+                </span>
+              )}
+            </p>
+            {status.currentImage && (
+              <p className="text-sm text-gray-400 mt-1">
+                Processing image: {status.currentImage.id}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Error Display */}
+        {status.lastError && (
+          <div className="mt-4 p-4 bg-red-900/50 rounded-lg border border-red-700">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-red-300">
+                  {status.apiErrorCount > 0 ? (
+                    <>
+                      API Error Count: {status.apiErrorCount}/{3}
+                      {status.apiErrorCount >= 3 && (
+                        <span className="block text-red-400 mt-1">
+                          Process stopped automatically due to multiple API errors.
+                          Please check your API key and restart the process.
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    'Error occurred'
+                  )}
+                </h3>
+                <div className="mt-2 text-sm text-red-200">
+                  {status.lastError}
                 </div>
               </div>
             </div>
-          )}
-        </div>
-        
+          </div>
+        )}
+
         {/* Start from Product ID Modal */}
         {showStartFromModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
@@ -366,9 +397,17 @@ function Dashboard() {
           <div className="mb-8">
             <h2 className="text-xl font-bold mb-4">Recently Processed Images</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {status.processedImages.map((image, index) => (
-                <ImageCard key={image.id || index} image={image} index={index} />
-              ))}
+              {[...new Map(status.processedImages.map(img => [img.id, img])).values()] // Deduplicate by image ID
+                .sort((a, b) => new Date(b.processedAt || 0) - new Date(a.processedAt || 0)) // Sort by processedAt date
+                .slice(0, 8) // Strictly limit to 8 images
+                .map((image, index) => (
+                  <ImageCard 
+                    key={`${image.id}-${image.processedAt}`} // Unique key combining ID and timestamp
+                    image={image} 
+                    index={index} 
+                  />
+                ))
+              }
             </div>
           </div>
         )}
